@@ -7,8 +7,8 @@ publish_to: "none"
 version: 0.11.4
 
 environment:
-  flutter: ">=3.27.4"
-  sdk: ">=3.3.0 <4.0.0"
+  flutter: ">=3.29.0"
+  sdk: ">=3.7.0 <4.0.0"
 
 dependencies:
   any_date: ^1.0.4
@@ -43,6 +43,7 @@ dependencies:
   collection: ^1.17.1
   connectivity_plus: ^5.0.2
   cross_file: ^0.3.4+1
+  crypto: ^3.0.3
 
   # Desktop Drop uses Cross File (XFile) data type
   defer_pointer: ^0.0.2
@@ -114,6 +115,7 @@ dependencies:
   package_info_plus: ^8.0.2
   path: ^1.8.3
   path_provider: ^2.0.15
+  pdfrx: 1.3.5
   percent_indicator: 4.2.3
   permission_handler: ^11.3.1
   protobuf: ^3.1.0

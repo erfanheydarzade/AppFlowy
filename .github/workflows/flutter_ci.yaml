@@ -25,7 +25,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  FLUTTER_VERSION: "3.27.4"
+  FLUTTER_VERSION: "3.29.0"
   RUST_TOOLCHAIN: "1.85.0"
   CARGO_MAKE_VERSION: "0.37.18"
   CLOUD_VERSION: 0.9.49-amd64
@@ -214,6 +214,11 @@ jobs:
           elif [ "$RUNNER_OS" == "Windows" ]; then
             cargo make dart_unit_test_no_build
           fi
+        shell: bash
+
+      - name: Run PDF subsystem tests
+        working-directory: frontend/appflowy_flutter
+        run: flutter test test/unit_test/editor/pdf_import_validator_test.dart
         shell: bash
 
   cloud_integration_test:

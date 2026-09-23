@@ -6,7 +6,7 @@ on:
       - "*"
 
 env:
-  FLUTTER_VERSION: "3.27.4"
+  FLUTTER_VERSION: "3.29.0"
   RUST_TOOLCHAIN: "1.85.0"
 
 jobs:
@@ -16,9 +16,44 @@ jobs:
       RELEASE_NOTES_PATH: /tmp/release_notes
     outputs:
       upload_url: ${{ steps.create_release.outputs.upload_url }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Validate semantic version tag
+        id: version
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          core="${tag%%[-+]*}"
+          if [[ ! "$core" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Release tag must be a semantic version, optionally prefixed with v." >&2
+            exit 1
+          fi
+          validate_identifiers() {
+            local value="$1"
+            [[ -n "$value" ]] || return 1
+            IFS='.' read -ra parts <<< "$value"
+            for part in "${parts[@]}"; do
+              [[ "$part" =~ ^[0-9A-Za-z-]+$ ]] || return 1
+              if [[ "$part" =~ ^[0-9]+$ ]] && [[ ${#part} -gt 1 && "$part" == 0* ]]; then
+                return 1
+              fi
+            done
+          }
+          without_build="${tag%%+*}"
+          prerelease=false
+          if [[ "$without_build" == *-* ]]; then
+            prerelease_value="${without_build#*-}"
+            validate_identifiers "$prerelease_value" || exit 1
+            prerelease=true
+          fi
+          if [[ "$tag" == *+* ]]; then
+            build_value="${tag#*+}"
+            validate_identifiers "$build_value" || exit 1
+          fi
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
 
       - name: Build release notes
         run: |
@@ -32,8 +67,10 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tag_name: ${{ github.ref }}
-          release_name: v${{ github.ref }}
+          release_name: ${{ github.ref_name }}
+          prerelease: ${{ steps.version.outputs.prerelease }}
           body_path: ${{ env.RELEASE_NOTES_PATH }}
+
 
   # the package name should be with the format: AppFlowy-<version>-<os>-<arch>
 
@@ -100,6 +137,32 @@ jobs:
         working-directory: ${{ env.WINDOWS_APP_RELEASE_PATH }}
         run: |
           iscc /F${{ env.WINDOWS_INSTALLER_NAME }} inno_setup_config.iss /DAppVersion=${{ github.ref_name }}
+
+      - name: Generate checksums
+        shell: pwsh
+        working-directory: ${{ env.WINDOWS_APP_RELEASE_PATH }}
+        run: |
+          $files = @("${{ env.WINDOWS_ZIP_NAME }}", "Output/${{ env.WINDOWS_INSTALLER_NAME }}.exe")
+          $lines = foreach ($file in $files) {
+            $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $file).Hash.ToLowerInvariant()
+            "$hash  $file"
+          }
+          $content = ($lines -join "`n") + "`n"
+          [System.IO.File]::WriteAllText(
+            "${{ env.WINDOWS_ZIP_NAME }}.sha256",
+            $content,
+            [System.Text.UTF8Encoding]::new($false)
+          )
+
+      - name: Upload checksums
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: ${{ env.WINDOWS_APP_RELEASE_PATH }}\${{ env.WINDOWS_ZIP_NAME }}.sha256
+          asset_name: AppFlowy-${{ github.ref_name }}-windows.sha256
+          asset_content_type: text/plain
 
       - name: Upload Asset
         id: upload-release-asset
@@ -206,6 +269,20 @@ jobs:
         working-directory: ${{ env.MACOS_APP_RELEASE_PATH }}
         run: zip --symlinks -qr ${{ env.MACOS_X86_ZIP_NAME }} AppFlowy.app
 
+      - name: Generate checksums
+        working-directory: ${{ env.MACOS_APP_RELEASE_PATH }}
+        run: shasum -a 256 ${{ env.MACOS_X86_ZIP_NAME }} ${{ env.MACOS_DMG_NAME }}.dmg > ${{ env.MACOS_X86_ZIP_NAME }}.sha256
+
+      - name: Upload checksums
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: ${{ env.MACOS_APP_RELEASE_PATH }}/${{ env.MACOS_X86_ZIP_NAME }}.sha256
+          asset_name: AppFlowy-${{ github.ref_name }}-macos-x86_64.sha256
+          asset_content_type: text/plain
+
       - name: Upload Asset
         uses: actions/upload-release-asset@v1
         env:
@@ -303,6 +380,20 @@ jobs:
       - name: Archive Asset
         working-directory: ${{ env.MACOS_APP_RELEASE_PATH }}
         run: zip --symlinks -qr ${{ env.MACOS_AARCH64_ZIP_NAME }} AppFlowy.app
+
+      - name: Generate checksums
+        working-directory: ${{ env.MACOS_APP_RELEASE_PATH }}
+        run: shasum -a 256 ${{ env.MACOS_AARCH64_ZIP_NAME }} ${{ env.MACOS_DMG_NAME }}.dmg > ${{ env.MACOS_AARCH64_ZIP_NAME }}.sha256
+
+      - name: Upload checksums
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: ${{ env.MACOS_APP_RELEASE_PATH }}/${{ env.MACOS_AARCH64_ZIP_NAME }}.sha256
+          asset_name: AppFlowy-${{ github.ref_name }}-macos-universal.sha256
+          asset_content_type: text/plain
 
       - name: Upload Asset
         uses: actions/upload-release-asset@v1
@@ -417,6 +508,20 @@ jobs:
           cd ..
           cp -r frontend/${{ env.LINUX_PACKAGE_TMP_APPIMAGE_NAME }} ${{ env.LINUX_APP_RELEASE_PATH }}/${{ env.LINUX_PACKAGE_APPIMAGE_NAME }}
 
+      - name: Generate checksums
+        working-directory: ${{ env.LINUX_APP_RELEASE_PATH }}
+        run: sha256sum ${{ env.LINUX_ZIP_NAME }} ${{ env.LINUX_PACKAGE_DEB_NAME }} ${{ env.LINUX_PACKAGE_RPM_NAME }} ${{ env.LINUX_PACKAGE_APPIMAGE_NAME }} > ${{ env.LINUX_PACKAGE_ZIP_NAME }}.sha256
+
+      - name: Upload checksums
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: ${{ env.LINUX_APP_RELEASE_PATH }}/${{ env.LINUX_PACKAGE_ZIP_NAME }}.sha256
+          asset_name: AppFlowy-${{ github.ref_name }}-linux.sha256
+          asset_content_type: text/plain
+
       - name: Upload Asset
         id: upload-release-asset
         uses: actions/upload-release-asset@v1
@@ -462,6 +567,7 @@ jobs:
           asset_content_type: application/octet-stream
 
   build-for-docker:
+    needs: create-release
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

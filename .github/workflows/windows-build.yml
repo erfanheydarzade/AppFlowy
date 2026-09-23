@@ -1,0 +1,94 @@
+name: Windows Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: AppFlowy version used in the artifact name
+        required: false
+        default: 0.0.0-dev
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FLUTTER_VERSION: '3.29.0'
+  RUST_TOOLCHAIN: '1.85.0'
+  BUILD_VERSION: ${{ github.event.inputs.version || github.ref_name }}
+
+jobs:
+  build-windows:
+    name: Windows x86_64
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Install Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          target: x86_64-pc-windows-msvc
+          override: true
+          profile: minimal
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            frontend/rust-lib
+          cache-all-crates: true
+
+      - name: Install Windows build tools
+        shell: bash
+        working-directory: frontend
+        run: |
+          vcpkg integrate install
+          cargo install --force --locked cargo-make
+          cargo install --force --locked duckscript_cli
+          cargo make appflowy-flutter-deps-tools
+
+      - name: Build Windows application
+        shell: bash
+        working-directory: frontend
+        run: |
+          flutter config --enable-windows-desktop
+          dart ./scripts/flutter_release_build/build_flowy.dart exclude-directives . "$BUILD_VERSION"
+          cargo make --env APP_VERSION="$BUILD_VERSION" --profile production-windows-x86 appflowy
+          dart ./scripts/flutter_release_build/build_flowy.dart include-directives . "$BUILD_VERSION"
+
+      - name: Create Windows archive and checksum
+        shell: pwsh
+        run: |
+          $product = "frontend/appflowy_flutter/product/$env:BUILD_VERSION/windows"
+          if (-not (Test-Path -LiteralPath $product -PathType Container)) {
+            throw "Windows build output was not found at $product"
+          }
+          New-Item -ItemType Directory -Path artifacts -Force | Out-Null
+          $archive = "artifacts/AppFlowy-$env:BUILD_VERSION-windows-x86_64.zip"
+          Compress-Archive -Path "$product/*" -DestinationPath $archive -Force
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
+          "$hash  $(Split-Path -Leaf $archive)" | Set-Content -Encoding ascii "artifacts/AppFlowy-$env:BUILD_VERSION-windows-x86_64.zip.sha256"
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: AppFlowy-${{ env.BUILD_VERSION }}-windows-x86_64
+          path: artifacts/*
+          if-no-files-found: error
+          retention-days: 14

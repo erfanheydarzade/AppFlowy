@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:appflowy/core/helpers/url_launcher.dart';
 import 'package:appflowy/generated/flowy_svgs.g.dart';
 import 'package:appflowy/generated/locale_keys.g.dart';
@@ -25,6 +27,8 @@ import 'package:universal_platform/universal_platform.dart';
 
 import 'file_block_menu.dart';
 import 'file_upload_menu.dart';
+import 'pdf_import_validator.dart';
+import 'pdf_workspace_viewer.dart';
 
 class FileBlockKeys {
   const FileBlockKeys._();
@@ -61,6 +65,12 @@ class FileBlockKeys {
   /// The value is a String, in form of user id.
   ///
   static const String uploadedBy = 'uploaded_by';
+
+  static const String mimeType = 'mime_type';
+
+  static const String size = 'size';
+
+  static const String sha256 = 'sha256';
 
   /// The GlobalKey of the FileBlockComponentState.
   ///
@@ -348,6 +358,25 @@ class FileBlockComponentState extends State<FileBlockComponent>
     FileUrlType urlType,
     String url,
   ) async {
+    final name = node.attributes[FileBlockKeys.name] as String?;
+    final source = url;
+    final isPdf = PdfImportValidator.isPdfName(name ?? '') ||
+        PdfImportValidator.isPdfName(Uri.tryParse(source)?.path ?? source) ||
+        node.attributes[FileBlockKeys.mimeType] == 'application/pdf';
+    if (isPdf) {
+      final sourceType = switch (urlType) {
+        FileUrlType.local => PdfSourceType.local,
+        FileUrlType.network => PdfSourceType.network,
+        FileUrlType.cloud => PdfSourceType.cloud,
+      };
+      return showPdfViewer(
+        context,
+        source: source,
+        sourceType: sourceType,
+        title: name ?? Uri.tryParse(source)?.pathSegments.last ?? 'PDF',
+        userProfile: context.read<DocumentBloc>().state.userProfilePB,
+      );
+    }
     await afLaunchUrlString(url, context: context);
   }
 
@@ -502,6 +531,24 @@ class FileBlockComponentState extends State<FileBlockComponent>
     final isLocalMode = documentBloc.isLocalMode;
     final urlType = isLocalMode ? FileUrlType.local : FileUrlType.cloud;
 
+    PdfImportMetadata? pdfMetadata;
+    if (PdfImportValidator.isPdfName(file.name) || file.mimeType == 'application/pdf') {
+      try {
+        pdfMetadata = await PdfImportValidator.validateAndParse(file);
+      } on PdfImportException catch (error) {
+        if (mounted) showSnackBarMessage(context, error.message);
+        return;
+      } on Object {
+        if (mounted) {
+          showSnackBarMessage(
+            context,
+            'The selected PDF is malformed or password-protected.',
+          );
+        }
+        return;
+      }
+    }
+
     String? url;
     String? errorMsg;
     if (isLocalMode) {
@@ -526,6 +573,11 @@ class FileBlockComponentState extends State<FileBlockComponent>
       FileBlockKeys.urlType: urlType.toIntValue(),
       FileBlockKeys.name: file.name,
       FileBlockKeys.uploadedAt: DateTime.now().millisecondsSinceEpoch,
+      if (pdfMetadata != null) ...{
+        FileBlockKeys.mimeType: 'application/pdf',
+        FileBlockKeys.size: pdfMetadata.size,
+        FileBlockKeys.sha256: pdfMetadata.sha256,
+      },
     });
     await editorState.apply(transaction);
   }
@@ -552,6 +604,29 @@ class FileBlockComponentState extends State<FileBlockComponent>
       name = uri.pathSegments[uri.pathSegments.length - 2];
     } else if (name.isEmpty) {
       name = uri.host;
+    }
+
+    if (PdfImportValidator.isPdfName(name)) {
+      XFile? downloaded;
+      try {
+        downloaded = await PdfImportValidator.downloadNetworkPdf(uri, name);
+        await insertFileFromLocal([downloaded]);
+      } on PdfImportException catch (error) {
+        if (mounted) showSnackBarMessage(context, error.message);
+      } on Object {
+        if (mounted) {
+          showSnackBarMessage(
+            context,
+            'The selected PDF is malformed or could not be downloaded.',
+          );
+        }
+      } finally {
+        if (downloaded != null) {
+          final file = File(downloaded.path);
+          if (await file.exists()) await file.delete();
+        }
+      }
+      return;
     }
 
     final transaction = editorState.transaction;

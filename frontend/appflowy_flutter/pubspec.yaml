@@ -182,7 +182,7 @@ dependency_overrides:
   url_protocol:
     git:
       url: https://github.com/LucasXu0/flutter_url_protocol.git
-      ref: 737681d
+      ref: 77a84201ed8ca50082f4248f3a373d053b1c0462
 
   appflowy_editor:
     git:
